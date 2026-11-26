@@ -27,15 +27,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.LightMode
@@ -52,6 +56,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -65,6 +70,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -100,11 +106,14 @@ import com.mustafa.musicplayer.data.MelodyPreferences
 import com.mustafa.musicplayer.data.MusicRepository
 import com.mustafa.musicplayer.data.Song
 import com.mustafa.musicplayer.data.ThemeMode
+import com.mustafa.musicplayer.player.EqualizerManager
+import com.mustafa.musicplayer.player.EqualizerState
 import com.mustafa.musicplayer.player.PlaybackService
 import com.mustafa.musicplayer.player.SleepTimerManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -190,9 +199,11 @@ private fun MelodyApp(
     var isLoading by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showNowPlaying by remember { mutableStateOf(false) }
+    var showEqualizer by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
 
     val sleepTimerRemainingMs by SleepTimerManager.remainingMs.collectAsState()
+    val equalizerState by EqualizerManager.state.collectAsState()
 
     // وضعیت پخش‌کننده Media3
     var mediaController by remember { mutableStateOf<MediaController?>(null) }
@@ -377,6 +388,18 @@ private fun MelodyApp(
         )
     }
 
+    if (showEqualizer) {
+        BackHandler { showEqualizer = false }
+        EqualizerScreen(
+            state = equalizerState,
+            onBack = { showEqualizer = false },
+            onToggleEnabled = { EqualizerManager.setEnabled(it) },
+            onSelectPreset = { EqualizerManager.usePreset(it) },
+            onBandChange = { index, level -> EqualizerManager.setBandLevel(index, level) }
+        )
+        return
+    }
+
     if (showNowPlaying && currentSong != null) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
@@ -385,10 +408,12 @@ private fun MelodyApp(
             isFavorite = currentSong.id in favoriteIds,
             shuffleEnabled = shuffleEnabled,
             repeatMode = repeatMode,
+            equalizerEnabled = equalizerState.isEnabled,
             sleepTimerRemainingMs = sleepTimerRemainingMs,
             currentPositionMs = currentPositionMs,
             durationMs = if (durationMs > 0L) durationMs else currentSong.durationMs,
             onBack = { showNowPlaying = false },
+            onOpenEqualizer = { showEqualizer = true },
             onOpenSleepTimer = { showSleepTimerDialog = true },
             onToggleFavorite = { toggleFavorite(currentSong.id) },
             onToggleShuffle = { toggleShuffle() },
@@ -420,6 +445,17 @@ private fun MelodyApp(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showEqualizer = true }) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "اکولایزر",
+                            tint = if (equalizerState.isEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                     IconButton(onClick = { showSleepTimerDialog = true }) {
                         Icon(
                             imageVector = Icons.Rounded.Timer,
@@ -580,6 +616,163 @@ private fun MelodyApp(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EqualizerScreen(
+    state: EqualizerState,
+    onBack: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
+    onSelectPreset: (Int) -> Unit,
+    onBandChange: (Short, Short) -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("اکولایزر", style = MaterialTheme.typography.titleLarge) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "بازگشت"
+                        )
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        if (!state.isAvailable) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(32.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.GraphicEq,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "ابتدا یک آهنگ پخش کن",
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "به‌محض شروع پخش اولین آهنگ، موتور اکولایزر دستگاه به Melody متصل می‌شود و قابل تنظیم خواهد بود.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+            return@Scaffold
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = "فعال‌سازی اکولایزر",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = if (state.isEnabled) "روشن" else "خاموش",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = state.isEnabled,
+                        onCheckedChange = onToggleEnabled
+                    )
+                }
+            }
+
+            if (state.presets.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "حالت‌های آماده (Presets)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        itemsIndexed(state.presets) { index, name ->
+                            FilterChip(
+                                selected = state.selectedPreset == index && state.isEnabled,
+                                onClick = { onSelectPreset(index) },
+                                label = { Text(name) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "تنظیم دستی باندهای فرکانسی",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                val minLevel = state.minBandLevel.toFloat()
+                val maxLevel = state.maxBandLevel.toFloat().coerceAtLeast(minLevel + 1f)
+
+                state.bands.forEach { band ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = formatFrequency(band.centerFreqHz),
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    text = formatDecibels(band.levelMb),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Slider(
+                                value = band.levelMb.toFloat().coerceIn(minLevel, maxLevel),
+                                onValueChange = { value ->
+                                    onBandChange(band.index, value.roundToInt().toShort())
+                                },
+                                valueRange = minLevel..maxLevel,
+                                enabled = state.isEnabled,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SleepTimerDialog(
     remainingMs: Long,
@@ -704,10 +897,12 @@ private fun NowPlayingScreen(
     isFavorite: Boolean,
     shuffleEnabled: Boolean,
     repeatMode: Int,
+    equalizerEnabled: Boolean,
     sleepTimerRemainingMs: Long,
     currentPositionMs: Long,
     durationMs: Long,
     onBack: () -> Unit,
+    onOpenEqualizer: () -> Unit,
     onOpenSleepTimer: () -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleShuffle: () -> Unit,
@@ -751,6 +946,17 @@ private fun NowPlayingScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenEqualizer) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "اکولایزر",
+                            tint = if (equalizerEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                     IconButton(onClick = onOpenSleepTimer) {
                         Icon(
                             imageVector = Icons.Rounded.Timer,
@@ -1079,4 +1285,19 @@ private fun formatDuration(durationMs: Long): String {
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+}
+
+private fun formatFrequency(hz: Int): String {
+    return if (hz >= 1000) {
+        val khz = hz / 1000f
+        if (hz % 1000 == 0) "${hz / 1000} kHz"
+        else String.format(Locale.US, "%.1f kHz", khz)
+    } else {
+        "$hz Hz"
+    }
+}
+
+private fun formatDecibels(levelMb: Short): String {
+    val db = levelMb / 100
+    return if (db > 0) "+$db dB" else "$db dB"
 }

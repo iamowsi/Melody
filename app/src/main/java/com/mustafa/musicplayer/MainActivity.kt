@@ -31,9 +31,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -46,6 +51,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -81,8 +87,10 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
+import com.mustafa.musicplayer.data.MelodyPreferences
 import com.mustafa.musicplayer.data.MusicRepository
 import com.mustafa.musicplayer.data.Song
+import com.mustafa.musicplayer.data.ThemeMode
 import com.mustafa.musicplayer.player.PlaybackService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -92,12 +100,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MelodyTheme {
+            val context = LocalContext.current
+            var themeMode by remember { mutableStateOf(MelodyPreferences.loadThemeMode(context)) }
+
+            MelodyTheme(themeMode = themeMode) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MelodyApp()
+                    MelodyApp(
+                        themeMode = themeMode,
+                        onCycleTheme = {
+                            val next = when (themeMode) {
+                                ThemeMode.SYSTEM -> ThemeMode.LIGHT
+                                ThemeMode.LIGHT -> ThemeMode.DARK
+                                ThemeMode.DARK -> ThemeMode.SYSTEM
+                            }
+                            themeMode = next
+                            MelodyPreferences.saveThemeMode(context, next)
+                        }
+                    )
                 }
             }
         }
@@ -105,14 +127,25 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MelodyTheme(content: @Composable () -> Unit) {
-    val colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+private fun MelodyTheme(
+    themeMode: ThemeMode,
+    content: @Composable () -> Unit
+) {
+    val useDark = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    val colorScheme = if (useDark) darkColorScheme() else lightColorScheme()
     MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MelodyApp() {
+private fun MelodyApp(
+    themeMode: ThemeMode,
+    onCycleTheme: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -122,6 +155,12 @@ private fun MelodyApp() {
         Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
+    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, audioPermission) == PackageManager.PERMISSION_GRANTED
@@ -129,12 +168,15 @@ private fun MelodyApp() {
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasPermission = granted
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasPermission = results[audioPermission] == true ||
+            ContextCompat.checkSelfPermission(context, audioPermission) == PackageManager.PERMISSION_GRANTED
     }
 
     var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
+    var favoriteIds by remember { mutableStateOf(MelodyPreferences.loadFavorites(context)) }
+    var showFavoritesOnly by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showNowPlaying by remember { mutableStateOf(false) }
@@ -145,6 +187,12 @@ private fun MelodyApp() {
     var isPlaying by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
+
+    fun toggleFavorite(songId: Long) {
+        val updated = if (songId in favoriteIds) favoriteIds - songId else favoriteIds + songId
+        favoriteIds = updated
+        MelodyPreferences.saveFavorites(context, updated)
+    }
 
     // اتصال به PlaybackService
     DisposableEffect(context) {
@@ -219,12 +267,17 @@ private fun MelodyApp() {
         }
     }
 
-    val filteredSongs = remember(songs, searchQuery) {
-        if (searchQuery.isBlank()) {
+    val filteredSongs = remember(songs, searchQuery, showFavoritesOnly, favoriteIds) {
+        val baseList = if (showFavoritesOnly) {
+            songs.filter { it.id in favoriteIds }
+        } else {
             songs
+        }
+        if (searchQuery.isBlank()) {
+            baseList
         } else {
             val q = searchQuery.trim()
-            songs.filter {
+            baseList.filter {
                 it.title.contains(q, ignoreCase = true) ||
                     it.artist.contains(q, ignoreCase = true) ||
                     it.album.contains(q, ignoreCase = true)
@@ -238,6 +291,7 @@ private fun MelodyApp() {
 
     fun playQueue(queue: List<Song>, startIndex: Int) {
         val controller = mediaController ?: return
+        if (queue.isEmpty() || startIndex !in queue.indices) return
         val mediaItems = queue.map { song ->
             MediaItem.Builder()
                 .setMediaId(song.id.toString())
@@ -270,9 +324,11 @@ private fun MelodyApp() {
         NowPlayingScreen(
             song = currentSong,
             isPlaying = isPlaying,
+            isFavorite = currentSong.id in favoriteIds,
             currentPositionMs = currentPositionMs,
             durationMs = if (durationMs > 0L) durationMs else currentSong.durationMs,
             onBack = { showNowPlaying = false },
+            onToggleFavorite = { toggleFavorite(currentSong.id) },
             onTogglePlayPause = { togglePlayPause() },
             onNext = { mediaController?.seekToNextMediaItem() },
             onPrevious = { mediaController?.seekToPreviousMediaItem() },
@@ -300,6 +356,16 @@ private fun MelodyApp() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = onCycleTheme) {
+                        Icon(
+                            imageVector = when (themeMode) {
+                                ThemeMode.SYSTEM -> Icons.Rounded.BrightnessAuto
+                                ThemeMode.LIGHT -> Icons.Rounded.LightMode
+                                ThemeMode.DARK -> Icons.Rounded.DarkMode
+                            },
+                            contentDescription = "تغییر تم"
+                        )
+                    }
                     if (hasPermission) {
                         IconButton(onClick = { refreshSongs() }) {
                             Icon(
@@ -331,7 +397,7 @@ private fun MelodyApp() {
             when {
                 !hasPermission -> {
                     PermissionRequestView(
-                        onRequestClick = { permissionLauncher.launch(audioPermission) }
+                        onRequestClick = { permissionLauncher.launch(permissionsToRequest) }
                     )
                 }
 
@@ -366,24 +432,70 @@ private fun MelodyApp() {
                             shape = RoundedCornerShape(16.dp)
                         )
 
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 16.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            itemsIndexed(
-                                items = filteredSongs,
-                                key = { _, song -> song.id }
-                            ) { index, song ->
-                                val isSelected = currentSong?.id == song.id
-                                SongRowItem(
-                                    song = song,
-                                    isSelected = isSelected,
-                                    onClick = { playQueue(filteredSongs, index) }
+                            FilterChip(
+                                selected = !showFavoritesOnly,
+                                onClick = { showFavoritesOnly = false },
+                                label = { Text("همه آهنگ‌ها (${songs.size})") }
+                            )
+                            FilterChip(
+                                selected = showFavoritesOnly,
+                                onClick = { showFavoritesOnly = true },
+                                label = { Text("علاقه‌مندی‌ها (${favoriteIds.count { id -> songs.any { it.id == id } }})") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Favorite,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                        }
+
+                        if (filteredSongs.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (showFavoritesOnly && searchQuery.isBlank()) {
+                                        "هنوز آهنگی به علاقه‌مندی‌ها اضافه نکرده‌ای"
+                                    } else {
+                                        "آهنگی با این مشخصات پیدا نشد"
+                                    },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(24.dp)
                                 )
-                                Divider(
-                                    modifier = Modifier.padding(start = 80.dp, end = 16.dp),
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(bottom = 16.dp)
+                            ) {
+                                itemsIndexed(
+                                    items = filteredSongs,
+                                    key = { _, song -> song.id }
+                                ) { index, song ->
+                                    val isSelected = currentSong?.id == song.id
+                                    SongRowItem(
+                                        song = song,
+                                        isSelected = isSelected,
+                                        isFavorite = song.id in favoriteIds,
+                                        onToggleFavorite = { toggleFavorite(song.id) },
+                                        onClick = { playQueue(filteredSongs, index) }
+                                    )
+                                    Divider(
+                                        modifier = Modifier.padding(start = 80.dp, end = 16.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -462,9 +574,11 @@ private fun MiniPlayerBar(
 private fun NowPlayingScreen(
     song: Song,
     isPlaying: Boolean,
+    isFavorite: Boolean,
     currentPositionMs: Long,
     durationMs: Long,
     onBack: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -489,6 +603,15 @@ private fun NowPlayingScreen(
                         Icon(
                             imageVector = Icons.Rounded.KeyboardArrowDown,
                             contentDescription = "بازگشت"
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onToggleFavorite) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "علاقه‌مندی",
+                            tint = if (isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -643,6 +766,8 @@ private fun AlbumArtBox(
 private fun SongRowItem(
     song: Song,
     isSelected: Boolean,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
     onClick: () -> Unit
 ) {
     Row(
@@ -653,7 +778,7 @@ private fun SongRowItem(
                 if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                 else MaterialTheme.colorScheme.background
             )
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(start = 16.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AlbumArtBox(
@@ -684,13 +809,22 @@ private fun SongRowItem(
             )
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         Text(
             text = formatDuration(song.durationMs),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        IconButton(onClick = onToggleFavorite) {
+            Icon(
+                imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                contentDescription = "علاقه‌مندی",
+                tint = if (isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+        }
     }
 }
 

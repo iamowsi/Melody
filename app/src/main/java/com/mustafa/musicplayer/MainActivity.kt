@@ -34,8 +34,8 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -242,7 +242,7 @@ private fun MelodyHomeScreen() {
                                     isSelected = selectedSong?.id == song.id,
                                     onClick = { selectedSong = song }
                                 )
-                                HorizontalDivider(
+                                Divider(
                                     modifier = Modifier.padding(start = 80.dp, end = 16.dp),
                                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                                 )

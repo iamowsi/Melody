@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
@@ -71,6 +73,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -81,6 +84,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -130,6 +134,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
+import com.mustafa.musicplayer.data.LyricsManager
 import com.mustafa.musicplayer.data.MelodyPreferences
 import com.mustafa.musicplayer.data.MusicFolder
 import com.mustafa.musicplayer.data.MusicRepository
@@ -271,6 +276,7 @@ private fun MelodyApp(
     var isLoading by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showNowPlaying by remember { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
     var showEqualizer by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
@@ -393,7 +399,7 @@ private fun MelodyApp(
                     durationMs = controller.duration
                 }
             }
-            delay(400L)
+            delay(300L)
         }
     }
 
@@ -559,6 +565,24 @@ private fun MelodyApp(
         return
     }
 
+    if (showLyrics && currentSong != null) {
+        BackHandler { showLyrics = false }
+        LyricsScreen(
+            song = currentSong,
+            isPlaying = isPlaying,
+            currentPositionMs = currentPositionMs,
+            onBack = { showLyrics = false },
+            onTogglePlayPause = { togglePlayPause() },
+            onNext = { mediaController?.seekToNextMediaItem() },
+            onPrevious = { mediaController?.seekToPreviousMediaItem() },
+            onSeekTo = { position ->
+                mediaController?.seekTo(position)
+                currentPositionMs = position
+            }
+        )
+        return
+    }
+
     if (showNowPlaying && currentSong != null) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
@@ -572,6 +596,7 @@ private fun MelodyApp(
             currentPositionMs = currentPositionMs,
             durationMs = if (durationMs > 0L) durationMs else currentSong.durationMs,
             onBack = { showNowPlaying = false },
+            onOpenLyrics = { showLyrics = true },
             onOpenFolders = { songForFolderDialog = currentSong },
             onOpenEqualizer = { showEqualizer = true },
             onOpenSleepTimer = { showSleepTimerDialog = true },
@@ -865,6 +890,334 @@ private fun MelodyApp(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LyricsScreen(
+    song: Song,
+    isPlaying: Boolean,
+    currentPositionMs: Long,
+    onBack: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit,
+    onSeekTo: (Long) -> Unit
+) {
+    val context = LocalContext.current
+    val fallbackAccent = MaterialTheme.colorScheme.primary
+    var extractedColor by remember(song.id) { mutableStateOf(fallbackAccent) }
+    var rawLyrics by remember(song.id) { mutableStateOf(LyricsManager.loadRawLyrics(context, song.id)) }
+    var showEditDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(song.albumArtUri) {
+        extractedColor = extractArtworkColor(context, song.albumArtUri) ?: fallbackAccent
+    }
+
+    val animatedGlowColor by animateColorAsState(
+        targetValue = extractedColor,
+        animationSpec = tween(durationMillis = 650),
+        label = "lyrics_glow"
+    )
+
+    val parsedLyrics = remember(rawLyrics) { LyricsManager.parse(rawLyrics) }
+    val activeLineIndex = remember(parsedLyrics, currentPositionMs) {
+        if (parsedLyrics.isSynced) {
+            LyricsManager.findActiveLineIndex(parsedLyrics.lines, currentPositionMs)
+        } else {
+            -1
+        }
+    }
+
+    val listState = rememberLazyListState()
+    LaunchedEffect(activeLineIndex) {
+        if (parsedLyrics.isSynced && activeLineIndex >= 0) {
+            val target = (activeLineIndex - 2).coerceAtLeast(0)
+            listState.animateScrollToItem(target)
+        }
+    }
+
+    if (showEditDialog) {
+        EditLyricsDialog(
+            songTitle = song.title,
+            initialText = rawLyrics,
+            onSave = { newText ->
+                LyricsManager.saveRawLyrics(context, song.id, newText)
+                rawLyrics = newText.trim()
+                showEditDialog = false
+            },
+            onDismiss = { showEditDialog = false }
+        )
+    }
+
+    val baseBg = MaterialTheme.colorScheme.background
+    val gradientBrush = Brush.verticalGradient(
+        colors = listOf(
+            animatedGlowColor.copy(alpha = 0.5f),
+            animatedGlowColor.copy(alpha = 0.18f),
+            baseBg
+        )
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(baseBg)
+            .background(gradientBrush)
+    ) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    ),
+                    title = {
+                        Column {
+                            Text(
+                                text = song.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (parsedLyrics.isSynced) {
+                                    "${song.artist} • هم‌زمان (LRC)"
+                                } else {
+                                    song.artist
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "بازگشت"
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showEditDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Edit,
+                                contentDescription = "ویرایش متن آهنگ"
+                            )
+                        }
+                        if (rawLyrics.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    LyricsManager.saveRawLyrics(context, song.id, "")
+                                    rawLyrics = ""
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "حذف متن آهنگ",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                )
+            },
+            bottomBar = {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                    tonalElevation = 4.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onPrevious) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipPrevious,
+                                contentDescription = "قبلی",
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        FilledIconButton(
+                            onClick = onTogglePlayPause,
+                            shape = CircleShape,
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = if (isPlaying) "توقف" else "پخش",
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        IconButton(onClick = onNext) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipNext,
+                                contentDescription = "بعدی",
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            if (parsedLyrics.lines.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Subtitles,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "هنوز متنی برای این آهنگ ذخیره نشده",
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "می‌توانی متن ساده یا فرمت زمان‌دار LRC (مثل [00:15.20] خط اول) را پیست کنی تا هم‌زمان با موزیک اسکرول شود.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(onClick = { showEditDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("افزودن متن آهنگ")
+                    }
+                }
+            } else if (parsedLyrics.isSynced) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    itemsIndexed(parsedLyrics.lines) { index, line ->
+                        val isActive = index == activeLineIndex
+                        val textColor by animateColorAsState(
+                            targetValue = if (isActive) {
+                                MaterialTheme.colorScheme.onBackground
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                            },
+                            animationSpec = tween(durationMillis = 250),
+                            label = "lyric_line_color"
+                        )
+                        Text(
+                            text = line.text,
+                            style = if (isActive) {
+                                MaterialTheme.typography.headlineSmall
+                            } else {
+                                MaterialTheme.typography.titleMedium
+                            },
+                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                            color = textColor,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    line.timeMs?.let { onSeekTo(it) }
+                                }
+                                .padding(vertical = 6.dp, horizontal = 8.dp)
+                        )
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = rawLyrics,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditLyricsDialog(
+    songTitle: String,
+    initialText: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember(initialText) { mutableStateOf(initialText) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("متن آهنگ")
+                Text(
+                    text = songTitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "متن ساده یا فرمت زمان‌دار LRC (مثلاً [00:12.50] خط اول) را وارد کن:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("متن آهنگ را اینجا پیست کن...") },
+                    minLines = 6,
+                    maxLines = 12,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }) {
+                Text("ذخیره")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("انصراف")
+            }
+        }
+    )
+}
+
 @Composable
 private fun FloatingMiniPlayerBar(
     song: Song,
@@ -1018,6 +1371,7 @@ private fun NowPlayingScreen(
     currentPositionMs: Long,
     durationMs: Long,
     onBack: () -> Unit,
+    onOpenLyrics: () -> Unit,
     onOpenFolders: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenSleepTimer: () -> Unit,
@@ -1155,18 +1509,18 @@ private fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 AlbumArtBox(
                     albumArtUri = song.albumArtUri,
                     contentDescription = song.album,
                     iconSize = 84.dp,
                     modifier = Modifier
-                        .fillMaxWidth(0.86f)
+                        .fillMaxWidth(0.80f)
                         .aspectRatio(1f)
                         .scale(artworkScale)
                         .shadow(
@@ -1190,7 +1544,7 @@ private fun NowPlayingScreen(
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = song.artist,
                         style = MaterialTheme.typography.bodyLarge,
@@ -1199,6 +1553,20 @@ private fun NowPlayingScreen(
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FilledTonalButton(
+                        onClick = onOpenLyrics,
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Subtitles,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("متن آهنگ", style = MaterialTheme.typography.labelLarge)
+                    }
                 }
 
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -1235,7 +1603,7 @@ private fun NowPlayingScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 24.dp),
+                        .padding(bottom = 16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {

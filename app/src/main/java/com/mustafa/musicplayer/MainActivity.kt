@@ -28,17 +28,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -55,8 +60,10 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -103,6 +110,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
 import com.mustafa.musicplayer.data.MelodyPreferences
+import com.mustafa.musicplayer.data.MusicFolder
 import com.mustafa.musicplayer.data.MusicRepository
 import com.mustafa.musicplayer.data.Song
 import com.mustafa.musicplayer.data.ThemeMode
@@ -113,6 +121,7 @@ import com.mustafa.musicplayer.player.SleepTimerManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -195,12 +204,17 @@ private fun MelodyApp(
 
     var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
     var favoriteIds by remember { mutableStateOf(MelodyPreferences.loadFavorites(context)) }
+    var folders by remember { mutableStateOf(MelodyPreferences.loadFolders(context)) }
     var showFavoritesOnly by remember { mutableStateOf(false) }
+    var selectedFolderId by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showNowPlaying by remember { mutableStateOf(false) }
     var showEqualizer by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var songForFolderDialog by remember { mutableStateOf<Song?>(null) }
+    var folderToDelete by remember { mutableStateOf<MusicFolder?>(null) }
 
     val sleepTimerRemainingMs by SleepTimerManager.remainingMs.collectAsState()
     val equalizerState by EqualizerManager.state.collectAsState()
@@ -218,6 +232,41 @@ private fun MelodyApp(
         val updated = if (songId in favoriteIds) favoriteIds - songId else favoriteIds + songId
         favoriteIds = updated
         MelodyPreferences.saveFavorites(context, updated)
+    }
+
+    fun createFolder(name: String, initialSongId: Long? = null) {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) return
+        val newFolder = MusicFolder(
+            id = UUID.randomUUID().toString(),
+            name = cleanName,
+            songIds = if (initialSongId != null) setOf(initialSongId) else emptySet()
+        )
+        val updated = folders + newFolder
+        folders = updated
+        MelodyPreferences.saveFolders(context, updated)
+    }
+
+    fun deleteFolder(folderId: String) {
+        val updated = folders.filterNot { it.id == folderId }
+        folders = updated
+        if (selectedFolderId == folderId) {
+            selectedFolderId = null
+        }
+        MelodyPreferences.saveFolders(context, updated)
+    }
+
+    fun toggleSongInFolder(folderId: String, songId: Long) {
+        val updated = folders.map { folder ->
+            if (folder.id == folderId) {
+                val newIds = if (songId in folder.songIds) folder.songIds - songId else folder.songIds + songId
+                folder.copy(songIds = newIds)
+            } else {
+                folder
+            }
+        }
+        folders = updated
+        MelodyPreferences.saveFolders(context, updated)
     }
 
     // اتصال به PlaybackService
@@ -303,11 +352,15 @@ private fun MelodyApp(
         }
     }
 
-    val filteredSongs = remember(songs, searchQuery, showFavoritesOnly, favoriteIds) {
-        val baseList = if (showFavoritesOnly) {
-            songs.filter { it.id in favoriteIds }
-        } else {
-            songs
+    val selectedFolder = remember(folders, selectedFolderId) {
+        folders.firstOrNull { it.id == selectedFolderId }
+    }
+
+    val filteredSongs = remember(songs, searchQuery, showFavoritesOnly, favoriteIds, selectedFolder) {
+        val baseList = when {
+            showFavoritesOnly -> songs.filter { it.id in favoriteIds }
+            selectedFolder != null -> songs.filter { it.id in selectedFolder.songIds }
+            else -> songs
         }
         if (searchQuery.isBlank()) {
             baseList
@@ -388,6 +441,51 @@ private fun MelodyApp(
         )
     }
 
+    if (showCreateFolderDialog) {
+        CreateFolderDialog(
+            onCreate = { name ->
+                createFolder(name, initialSongId = songForFolderDialog?.id)
+                showCreateFolderDialog = false
+            },
+            onDismiss = { showCreateFolderDialog = false }
+        )
+    }
+
+    songForFolderDialog?.let { targetSong ->
+        AssignFoldersDialog(
+            song = targetSong,
+            folders = folders,
+            onToggleFolder = { folderId -> toggleSongInFolder(folderId, targetSong.id) },
+            onCreateNewFolder = { showCreateFolderDialog = true },
+            onDismiss = { songForFolderDialog = null }
+        )
+    }
+
+    folderToDelete?.let { targetFolder ->
+        AlertDialog(
+            onDismissRequest = { folderToDelete = null },
+            title = { Text("حذف فولدر") },
+            text = {
+                Text("آیا فولدر «${targetFolder.name}» حذف شود؟ (فایل‌های اصلی آهنگ‌ها از گوشی پاک نمی‌شوند)")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteFolder(targetFolder.id)
+                        folderToDelete = null
+                    }
+                ) {
+                    Text("حذف", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { folderToDelete = null }) {
+                    Text("انصراف")
+                }
+            }
+        )
+    }
+
     if (showEqualizer) {
         BackHandler { showEqualizer = false }
         EqualizerScreen(
@@ -413,6 +511,7 @@ private fun MelodyApp(
             currentPositionMs = currentPositionMs,
             durationMs = if (durationMs > 0L) durationMs else currentSong.durationMs,
             onBack = { showNowPlaying = false },
+            onOpenFolders = { songForFolderDialog = currentSong },
             onOpenEqualizer = { showEqualizer = true },
             onOpenSleepTimer = { showSleepTimerDialog = true },
             onToggleFavorite = { toggleFavorite(currentSong.id) },
@@ -543,29 +642,97 @@ private fun MelodyApp(
                             shape = RoundedCornerShape(16.dp)
                         )
 
-                        Row(
+                        LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                                .padding(vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            FilterChip(
-                                selected = !showFavoritesOnly,
-                                onClick = { showFavoritesOnly = false },
-                                label = { Text("همه آهنگ‌ها (${songs.size})") }
-                            )
-                            FilterChip(
-                                selected = showFavoritesOnly,
-                                onClick = { showFavoritesOnly = true },
-                                label = { Text("علاقه‌مندی‌ها (${favoriteIds.count { id -> songs.any { it.id == id } }})") },
-                                leadingIcon = {
+                            item {
+                                FilterChip(
+                                    selected = !showFavoritesOnly && selectedFolderId == null,
+                                    onClick = {
+                                        showFavoritesOnly = false
+                                        selectedFolderId = null
+                                    },
+                                    label = { Text("همه (${songs.size})") }
+                                )
+                            }
+                            item {
+                                FilterChip(
+                                    selected = showFavoritesOnly,
+                                    onClick = {
+                                        showFavoritesOnly = true
+                                        selectedFolderId = null
+                                    },
+                                    label = { Text("علاقه‌مندی‌ها (${favoriteIds.count { id -> songs.any { it.id == id } }})") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Favorite,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                )
+                            }
+                            items(folders, key = { it.id }) { folder ->
+                                val count = folder.songIds.count { id -> songs.any { it.id == id } }
+                                FilterChip(
+                                    selected = selectedFolderId == folder.id,
+                                    onClick = {
+                                        showFavoritesOnly = false
+                                        selectedFolderId = folder.id
+                                    },
+                                    label = { Text("${folder.name} ($count)") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Folder,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { showCreateFolderDialog = true },
+                                    label = { Text("فولدر جدید") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Add,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        if (selectedFolder != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "فولدر: ${selectedFolder.name}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                TextButton(onClick = { folderToDelete = selectedFolder }) {
                                     Icon(
-                                        imageVector = Icons.Rounded.Favorite,
+                                        imageVector = Icons.Rounded.DeleteOutline,
                                         contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
                                     )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("حذف فولدر", color = MaterialTheme.colorScheme.error)
                                 }
-                            )
+                            }
                         }
 
                         if (filteredSongs.isEmpty()) {
@@ -574,10 +741,13 @@ private fun MelodyApp(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (showFavoritesOnly && searchQuery.isBlank()) {
-                                        "هنوز آهنگی به علاقه‌مندی‌ها اضافه نکرده‌ای"
-                                    } else {
-                                        "آهنگی با این مشخصات پیدا نشد"
+                                    text = when {
+                                        selectedFolder != null && searchQuery.isBlank() ->
+                                            "این فولدر هنوز خالی است.\nاز لیست «همه» روی آیکون فولدر کنار هر آهنگ بزن تا به اینجا اضافه شود."
+                                        showFavoritesOnly && searchQuery.isBlank() ->
+                                            "هنوز آهنگی به علاقه‌مندی‌ها اضافه نکرده‌ای"
+                                        else ->
+                                            "آهنگی با این مشخصات پیدا نشد"
                                     },
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -595,11 +765,14 @@ private fun MelodyApp(
                                     key = { _, song -> song.id }
                                 ) { index, song ->
                                     val isSelected = currentSong?.id == song.id
+                                    val isInAnyFolder = folders.any { song.id in it.songIds }
                                     SongRowItem(
                                         song = song,
                                         isSelected = isSelected,
                                         isFavorite = song.id in favoriteIds,
+                                        isInFolder = isInAnyFolder,
                                         onToggleFavorite = { toggleFavorite(song.id) },
+                                        onManageFolders = { songForFolderDialog = song },
                                         onClick = { playQueue(filteredSongs, index) }
                                     )
                                     Divider(
@@ -614,6 +787,123 @@ private fun MelodyApp(
             }
         }
     }
+}
+
+@Composable
+private fun CreateFolderDialog(
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var folderName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ساخت فولدر جدید") },
+        text = {
+            OutlinedTextField(
+                value = folderName,
+                onValueChange = { folderName = it },
+                placeholder = { Text("مثلاً: رانندگی، ورزش، آرامش‌بخش...") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(folderName) },
+                enabled = folderName.trim().isNotEmpty()
+            ) {
+                Text("ساخت فولدر")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("انصراف")
+            }
+        }
+    )
+}
+
+@Composable
+private fun AssignFoldersDialog(
+    song: Song,
+    folders: List<MusicFolder>,
+    onToggleFolder: (String) -> Unit,
+    onCreateNewFolder: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("افزودن به فولدر")
+                Text(
+                    text = song.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (folders.isEmpty()) {
+                    Text(
+                        text = "هنوز فولدری نساخته‌ای. اول یک فولدر جدید بساز:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    folders.forEach { folder ->
+                        val checked = song.id in folder.songIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onToggleFolder(folder.id) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { onToggleFolder(folder.id) }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = folder.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onCreateNewFolder,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("ساخت فولدر جدید")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("تأیید")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -902,6 +1192,7 @@ private fun NowPlayingScreen(
     currentPositionMs: Long,
     durationMs: Long,
     onBack: () -> Unit,
+    onOpenFolders: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenSleepTimer: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -946,6 +1237,13 @@ private fun NowPlayingScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenFolders) {
+                        Icon(
+                            imageVector = Icons.Rounded.CreateNewFolder,
+                            contentDescription = "افزودن به فولدر",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = onOpenEqualizer) {
                         Icon(
                             imageVector = Icons.Rounded.GraphicEq,
@@ -1156,7 +1454,9 @@ private fun SongRowItem(
     song: Song,
     isSelected: Boolean,
     isFavorite: Boolean,
+    isInFolder: Boolean,
     onToggleFavorite: () -> Unit,
+    onManageFolders: () -> Unit,
     onClick: () -> Unit
 ) {
     Row(
@@ -1198,7 +1498,7 @@ private fun SongRowItem(
             )
         }
 
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(4.dp))
 
         Text(
             text = formatDuration(song.durationMs),
@@ -1206,12 +1506,27 @@ private fun SongRowItem(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        IconButton(onClick = onToggleFavorite) {
+        IconButton(
+            onClick = onManageFolders,
+            modifier = Modifier.size(38.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.CreateNewFolder,
+                contentDescription = "افزودن به فولدر",
+                tint = if (isInFolder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        IconButton(
+            onClick = onToggleFavorite,
+            modifier = Modifier.size(38.dp)
+        ) {
             Icon(
                 imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                 contentDescription = "علاقه‌مندی",
                 tint = if (isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(20.dp)
             )
         }
     }

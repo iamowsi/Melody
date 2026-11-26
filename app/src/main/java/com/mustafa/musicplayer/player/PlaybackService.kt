@@ -2,13 +2,17 @@ package com.mustafa.musicplayer.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.mustafa.musicplayer.MainActivity
 
+@OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
@@ -25,6 +29,18 @@ class PlaybackService : MediaSessionService() {
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
+
+        if (player.audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+            EqualizerManager.attachToSession(player.audioSessionId)
+        }
+
+        player.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                    EqualizerManager.attachToSession(audioSessionId)
+                }
+            }
+        })
 
         SleepTimerManager.bindExpireAction {
             player.pause()
@@ -58,6 +74,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         SleepTimerManager.cancel()
         SleepTimerManager.bindExpireAction(null)
+        EqualizerManager.release()
         mediaSession?.run {
             player.release()
             release()

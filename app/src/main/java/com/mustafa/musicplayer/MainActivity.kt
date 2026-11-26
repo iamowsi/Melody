@@ -43,9 +43,14 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
@@ -55,18 +60,22 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,6 +101,7 @@ import com.mustafa.musicplayer.data.MusicRepository
 import com.mustafa.musicplayer.data.Song
 import com.mustafa.musicplayer.data.ThemeMode
 import com.mustafa.musicplayer.player.PlaybackService
+import com.mustafa.musicplayer.player.SleepTimerManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -180,11 +190,16 @@ private fun MelodyApp(
     var isLoading by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showNowPlaying by remember { mutableStateOf(false) }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
+
+    val sleepTimerRemainingMs by SleepTimerManager.remainingMs.collectAsState()
 
     // وضعیت پخش‌کننده Media3
     var mediaController by remember { mutableStateOf<MediaController?>(null) }
     var currentMediaId by remember { mutableStateOf<String?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
+    var shuffleEnabled by remember { mutableStateOf(false) }
+    var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
 
@@ -205,6 +220,8 @@ private fun MelodyApp(
                 runCatching { controllerFuture.get() }.onSuccess { controller ->
                     mediaController = controller
                     isPlaying = controller.isPlaying
+                    shuffleEnabled = controller.shuffleModeEnabled
+                    repeatMode = controller.repeatMode
                     currentMediaId = controller.currentMediaItem?.mediaId
                     currentPositionMs = controller.currentPosition.coerceAtLeast(0L)
                     durationMs = controller.duration.coerceAtLeast(0L)
@@ -212,6 +229,14 @@ private fun MelodyApp(
                     val listener = object : Player.Listener {
                         override fun onIsPlayingChanged(playing: Boolean) {
                             isPlaying = playing
+                        }
+
+                        override fun onShuffleModeEnabledChanged(enabled: Boolean) {
+                            shuffleEnabled = enabled
+                        }
+
+                        override fun onRepeatModeChanged(mode: Int) {
+                            repeatMode = mode
                         }
 
                         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -319,16 +344,55 @@ private fun MelodyApp(
         if (controller.isPlaying) controller.pause() else controller.play()
     }
 
+    fun toggleShuffle() {
+        val controller = mediaController ?: return
+        val next = !controller.shuffleModeEnabled
+        controller.shuffleModeEnabled = next
+        shuffleEnabled = next
+    }
+
+    fun cycleRepeatMode() {
+        val controller = mediaController ?: return
+        val next = when (controller.repeatMode) {
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+        controller.repeatMode = next
+        repeatMode = next
+    }
+
+    if (showSleepTimerDialog) {
+        SleepTimerDialog(
+            remainingMs = sleepTimerRemainingMs,
+            onSelectMinutes = { minutes ->
+                SleepTimerManager.start(minutes)
+                showSleepTimerDialog = false
+            },
+            onCancelTimer = {
+                SleepTimerManager.cancel()
+                showSleepTimerDialog = false
+            },
+            onDismiss = { showSleepTimerDialog = false }
+        )
+    }
+
     if (showNowPlaying && currentSong != null) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
             song = currentSong,
             isPlaying = isPlaying,
             isFavorite = currentSong.id in favoriteIds,
+            shuffleEnabled = shuffleEnabled,
+            repeatMode = repeatMode,
+            sleepTimerRemainingMs = sleepTimerRemainingMs,
             currentPositionMs = currentPositionMs,
             durationMs = if (durationMs > 0L) durationMs else currentSong.durationMs,
             onBack = { showNowPlaying = false },
+            onOpenSleepTimer = { showSleepTimerDialog = true },
             onToggleFavorite = { toggleFavorite(currentSong.id) },
+            onToggleShuffle = { toggleShuffle() },
+            onCycleRepeat = { cycleRepeatMode() },
             onTogglePlayPause = { togglePlayPause() },
             onNext = { mediaController?.seekToNextMediaItem() },
             onPrevious = { mediaController?.seekToPreviousMediaItem() },
@@ -356,6 +420,17 @@ private fun MelodyApp(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSleepTimerDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Rounded.Timer,
+                            contentDescription = "تایمر خواب",
+                            tint = if (sleepTimerRemainingMs > 0L) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                     IconButton(onClick = onCycleTheme) {
                         Icon(
                             imageVector = when (themeMode) {
@@ -506,6 +581,58 @@ private fun MelodyApp(
 }
 
 @Composable
+private fun SleepTimerDialog(
+    remainingMs: Long,
+    onSelectMinutes: (Int) -> Unit,
+    onCancelTimer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val presets = listOf(15, 30, 45, 60)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تایمر خواب") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (remainingMs > 0L) {
+                    Text(
+                        text = "زمان باقی‌مانده: ${formatDuration(remainingMs)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Text(
+                        text = "پس از زمان انتخاب‌شده، پخش موزیک به صورت خودکار متوقف می‌شود:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                presets.forEach { minutes ->
+                    OutlinedButton(
+                        onClick = { onSelectMinutes(minutes) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("$minutes دقیقه")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (remainingMs > 0L) {
+                TextButton(onClick = onCancelTimer) {
+                    Text("لغو تایمر", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("بستن")
+            }
+        }
+    )
+}
+
+@Composable
 private fun MiniPlayerBar(
     song: Song,
     isPlaying: Boolean,
@@ -575,10 +702,16 @@ private fun NowPlayingScreen(
     song: Song,
     isPlaying: Boolean,
     isFavorite: Boolean,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    sleepTimerRemainingMs: Long,
     currentPositionMs: Long,
     durationMs: Long,
     onBack: () -> Unit,
+    onOpenSleepTimer: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onCycleRepeat: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -597,7 +730,18 @@ private fun NowPlayingScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("در حال پخش", style = MaterialTheme.typography.titleMedium) },
+                title = {
+                    Column {
+                        Text("در حال پخش", style = MaterialTheme.typography.titleMedium)
+                        if (sleepTimerRemainingMs > 0L) {
+                            Text(
+                                text = "تایمر خواب: ${formatDuration(sleepTimerRemainingMs)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -607,6 +751,17 @@ private fun NowPlayingScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenSleepTimer) {
+                        Icon(
+                            imageVector = Icons.Rounded.Timer,
+                            contentDescription = "تایمر خواب",
+                            tint = if (sleepTimerRemainingMs > 0L) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                     IconButton(onClick = onToggleFavorite) {
                         Icon(
                             imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -695,17 +850,29 @@ private fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                IconButton(onClick = onToggleShuffle) {
+                    Icon(
+                        imageVector = Icons.Rounded.Shuffle,
+                        contentDescription = "پخش تصادفی",
+                        tint = if (shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
                 IconButton(
                     onClick = onPrevious,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.SkipPrevious,
                         contentDescription = "قبلی",
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                 }
 
@@ -723,12 +890,28 @@ private fun NowPlayingScreen(
 
                 IconButton(
                     onClick = onNext,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.SkipNext,
                         contentDescription = "بعدی",
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                IconButton(onClick = onCycleRepeat) {
+                    Icon(
+                        imageVector = if (repeatMode == Player.REPEAT_MODE_ONE) {
+                            Icons.Rounded.RepeatOne
+                        } else {
+                            Icons.Rounded.Repeat
+                        },
+                        contentDescription = "تکرار",
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }

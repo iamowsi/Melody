@@ -63,6 +63,7 @@ dependencies {
     implementation 'androidx.media3:media3-session:1.2.1'
     implementation 'androidx.media3:media3-common:1.2.1'
 
-    // Album Art Image Loading
+    // Album Art Image Loading & Dynamic Color Extraction
     implementation 'io.coil-kt:coil-compose:2.5.0'
+    implementation 'androidx.palette:palette-ktx:1.0.0'
 }

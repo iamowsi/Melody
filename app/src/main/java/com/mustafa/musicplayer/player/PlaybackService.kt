@@ -26,6 +26,10 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
+        SleepTimerManager.bindExpireAction {
+            player.pause()
+        }
+
         val sessionActivityIntent = PendingIntent.getActivity(
             this,
             0,
@@ -52,6 +56,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        SleepTimerManager.cancel()
+        SleepTimerManager.bindExpireAction(null)
         mediaSession?.run {
             player.release()
             release()
